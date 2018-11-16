@@ -1,0 +1,206 @@
+rm(list = ls())
+
+#### IMPORT SOURCES ##########################################################
+setwd("/Users/shirley/Desktop/Projects/20180620_global/Code/soil_moisture_stress")
+source("const.R")
+source("evap.R")
+source("splash.R")
+
+#### SPLASH ###################################################################
+# read total elevation
+elv <- read.csv("/Users/shirley/Desktop/Projects/20180620_global/Data/elevation/ele.csv")
+elv <- as.matrix(elv)
+
+# Initialize map results:
+n_wn <- matrix(rep(0,3628800),nrow = 259200,ncol = 14)
+ n_wn[,1:2] <- elv[,1:2]
+n_alpha <- matrix(rep(0,3628800),nrow = 259200,ncol = 14)
+n_alpha[,1:2] <- elv[,1:2]
+
+# days in a year
+
+
+ y <- 1983
+ny <- julian_day(y + 1, 1, 1) - julian_day(y, 1, 1)
+
+# read source data
+sf_file <- paste("/Users/shirley/Desktop/Projects/20180620_global/Data/SPLASH/cld/sf_daily_per_year/",y,".csv",sep = "")
+pn_file <- paste("/Users/shirley/Desktop/Projects/20180620_global/Data/SPLASH/pre/pre_per_year/",y,".csv",sep = "")
+tair_file <- paste("/Users/shirley/Desktop/Projects/20180620_global/Data/SPLASH/tmp/",y,".csv",sep = "")
+
+sf <- read.csv(sf_file,header = F)
+pn <- read.csv(pn_file,header = F)
+tair <- read.csv(tair_file,header = F)
+
+d_col <- (y-1981) * 12
+
+ for (r in 1:nrow(elv)) {
+  
+  # prepare a year's data of one point
+  my_data <- list()
+  my_data$sf <- as.numeric(sf[r,]) 
+  my_data$pn <- as.numeric(pn[r,])
+  my_data$tair <- as.numeric(tair[r,])
+  my_data$num_lines <- dim(sf)[2]
+  my_data$year <- y
+  my_data$lat_deg <- as.numeric(elv[r,2])
+  my_data$elv_m <- as.numeric(elv[r,3])
+  
+  if ((anyNA(sf[r,])==T) | (anyNA(pn[r,])==T) | (anyNA(tair[r,])==T)) {
+    
+    n_wn[r,3:14] <- NA
+    n_alpha[r,3:14] <- NA
+    
+  } else {
+    
+    # Initialize daily results:
+    daily_totals <- matrix(data=rep(0, 3294), nrow=366, ncol=9)
+    daily_totals <- as.data.frame(daily_totals)
+    names(daily_totals) <- c("ho",   # daily solar irradiation, J/m2
+                             "hn",   # daily net radiation, J/m2
+                             "qn",   # daily PPFD, mol/m2
+                             "cn",   # daily condensation, mm
+                             "wn",   # daily soil moisture, mm
+                             "ro",   # daily runoff, mm
+                             "eq_n", # daily equilibrium ET, mm
+                             "ep_n", # daily potential ET, mm
+                             "ea_n") # daily actual ET, mm
+    
+    # Initialize monthly results:
+    monthly_totals <- matrix(data=rep(0, 96), nrow=12, ncol=8)
+    monthly_totals <- as.data.frame(monthly_totals)
+    names(monthly_totals) <- c("eq_m",  # monthly equilibrium ET (QET), mm
+                               "ep_m",  # monthly potential ET (PET), mm
+                               "ea_m",  # monthly actual ET (AET), mm
+                               "cpa",   # Cramer-Prentice alpha, unitless
+                               "cwd",   # climatic water deficit, mm
+                               "q_m",   # monthly PPFD, mol/m2
+                               "rela_sm_m",   # monthly relative soil moisture, mm
+                               "an_alpha")   # annual AET/PET (alpha), unitless
+    
+    # Spin up the soil moisture content
+    daily_totals <- spin_up(my_data, daily_totals)
+    
+    # Run SPLASH for a full year:
+    all_months <- seq(from=1, to=12, by=1)
+    monthly_totals <- monthly_totals*0
+    
+    # monthly
+    for (m in all_months) {
+      # Calculate days of current month:
+      nm <- julian_day(y, m + 1, 1) - julian_day(y, m, 1)
+      
+      # daily:
+      for (i in seq(from=1, to=nm, by=1)) {
+        # Calculate day of year:
+        n <- julian_day(y, m, i) - julian_day(y, 1 , 1) + 1
+        
+        idx <- (n - 1)
+        if (idx < 1) {
+          idx <- ny
+        }
+        daily_vals <- run_one_day(my_data$lat_deg,
+                                  my_data$elv_m,
+                                  n,
+                                  my_data$year,
+                                  daily_totals$wn[idx],
+                                  my_data$sf[n],
+                                  my_data$tair[n],
+                                  my_data$pn[n])
+        
+        # Update daily values:
+        daily_totals$wn[n] <- daily_vals$wn
+        daily_totals$ro[n] <- daily_vals$ro
+        
+        if ( (ny == 365) & (n == 365) ) {
+          daily_totals$wn[n + 1] <- daily_totals$wn[n]
+        }
+        
+        # Save daily results:
+        daily_totals$ho[n] <- daily_vals$ho
+        daily_totals$hn[n] <- daily_vals$hn
+        daily_totals$qn[n] <- daily_vals$ppfd
+        daily_totals$cn[n] <- daily_vals$cond
+        daily_totals$eq_n[n] <- daily_vals$eet
+        daily_totals$ep_n[n] <- daily_vals$pet
+        daily_totals$ea_n[n] <- daily_vals$aet
+        
+        # Update monthly totals:
+        monthly_totals$eq_m[m] <- monthly_totals$eq_m[m] + daily_vals$eet
+        monthly_totals$ep_m[m] <- monthly_totals$ep_m[m] + daily_vals$pet
+        monthly_totals$ea_m[m] <- monthly_totals$ea_m[m] + daily_vals$aet
+        monthly_totals$q_m[m] <- monthly_totals$q_m[m] + daily_vals$ppfd
+      } # end daily
+      monthly_totals$cpa[m] <- monthly_totals$ea_m[m]/monthly_totals$eq_m[m]
+      monthly_totals$cwd[m] <- monthly_totals$ep_m[m] - monthly_totals$ea_m[m]
+    } # end monthly
+    
+    # calculate monthly average relative soil moisture
+    monthly_totals$rela_sm_m[1] <- mean(daily_totals$wn[1:31])
+    if ((y%%4==0 & y%%100!=0)|(y%%400==0)) {
+      monthly_totals$rela_sm_m[2] <- mean(daily_totals$wn[32:60])
+      monthly_totals$rela_sm_m[3] <- mean(daily_totals$wn[61:91])
+      monthly_totals$rela_sm_m[4] <- mean(daily_totals$wn[92:121])
+      monthly_totals$rela_sm_m[5] <- mean(daily_totals$wn[122:152])
+      monthly_totals$rela_sm_m[6] <- mean(daily_totals$wn[153:182])
+      monthly_totals$rela_sm_m[7] <- mean(daily_totals$wn[183:213])
+      monthly_totals$rela_sm_m[8] <- mean(daily_totals$wn[214:244])
+      monthly_totals$rela_sm_m[9] <- mean(daily_totals$wn[245:274])
+      monthly_totals$rela_sm_m[10] <- mean(daily_totals$wn[275:305])
+      monthly_totals$rela_sm_m[11] <- mean(daily_totals$wn[306:335])
+      monthly_totals$rela_sm_m[12] <- mean(daily_totals$wn[336:366])
+    } else {
+      monthly_totals$rela_sm_m[2] <- mean(daily_totals$wn[32:59])
+      monthly_totals$rela_sm_m[3] <- mean(daily_totals$wn[60:90])
+      monthly_totals$rela_sm_m[4] <- mean(daily_totals$wn[91:120])
+      monthly_totals$rela_sm_m[5] <- mean(daily_totals$wn[121:151])
+      monthly_totals$rela_sm_m[6] <- mean(daily_totals$wn[152:181])
+      monthly_totals$rela_sm_m[7] <- mean(daily_totals$wn[182:212])
+      monthly_totals$rela_sm_m[8] <- mean(daily_totals$wn[213:243])
+      monthly_totals$rela_sm_m[9] <- mean(daily_totals$wn[244:273])
+      monthly_totals$rela_sm_m[10] <- mean(daily_totals$wn[274:304])
+      monthly_totals$rela_sm_m[11] <- mean(daily_totals$wn[305:334])
+      monthly_totals$rela_sm_m[12] <- mean(daily_totals$wn[335:365])
+    }
+    monthly_totals$rela_sm_m <- monthly_totals$rela_sm_m/150
+    
+    # calculate annual AET/PET (alpha)
+    monthly_totals$an_alpha <- mean(monthly_totals$ea_m)/mean(monthly_totals$ep_m)
+    
+    # fit the values into table
+    n_wn[r,3:14] <- monthly_totals$rela_sm_m
+    n_alpha[r,3:14] <- monthly_totals$an_alpha
+    
+  }
+  print(r)
+}
+
+fn <-  dir("/Users/shirley/Desktop/Projects/20180620_global/Data/Tmp/convert_map")
+
+for (f in (d_col-9):(d_col+2)) {
+  k=1
+  wn_mo <- matrix(rep(0,259200),nrow = 360,ncol = 720)
+  alpha_annual <- matrix(rep(0,259200),nrow = 360,ncol = 720)
+  for (i in 1:360) {
+    wn_mo[(361-i),1:720] <- n_wn[(720*k-719):(720*k),(f-d_col+12)]
+    alpha_annual[(361-i),1:720] <- n_alpha[(720*k-719):(720*k),(f-d_col+12)]
+    k=k+1
+  }
+  output_wn <- paste("/Users/shirley/Desktop/Projects/20180620_global/Data/SPLASH/wn_alpha/wn/",fn[(f-2)],sep = "")
+  write.table(wn_mo,output_wn,sep = ",",na="NaN",row.names = F,col.names = F)
+  
+  output_alpha <- paste("/Users/shirley/Desktop/Projects/20180620_global/Data/SPLASH/wn_alpha/alpha/",fn[(f-2)],sep = "")
+  write.table(alpha_annual,output_alpha,sep = ",",na="NaN",row.names = F,col.names = F)
+}
+
+print(Sys.time())
+
+
+
+# write.table(n_wn,"/Users/shirley/Desktop/Projects/20180620_global/Data/SPLASH/wn_alpha/n_wn.csv",sep = ",",na="NaN",row.names = F,col.names = F)
+# write.table(n_alpha,"/Users/shirley/Desktop/Projects/20180620_global/Data/SPLASH/wn_alpha/n_alpha.csv",sep = ",",na="NaN",row.names = F,col.names = F)
+
+
+
+
+
