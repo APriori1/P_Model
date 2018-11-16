@@ -1,0 +1,209 @@
+rm(list = ls());
+setwd("/Users/shirley/Desktop/Projects/Pmodel_20180405/Code");
+source("Constant.R");
+
+Siteinfo <- read.csv("/Users/shirley/Desktop/Projects/Pmodel_20180405/Site_location_ref.csv",header = T);
+# colnames(Siteinfo) <- c("Site","Lat","Lon","Elev")
+
+setwd("/Users/shirley/Desktop/Projects/20180516/GPP souce (MERIS fAPAR)/Site_data")
+fn <- dir()
+for (site in fn) {
+# in this loop, get variables of sites for P model 
+  sitename <- substr(site,1,6)
+  z= Siteinfo$elev[Siteinfo$Site==sitename];
+  d <- read.csv(site,header = T);
+  
+  CO2ppm <- d$CO2;
+
+  Rad <- d$Rad;
+  ppfd <- Rad * kfFEC * (1.0e-3);
+
+  tc <- d$Tavg;
+  Tmax <- d$Tmax;
+  Tmin <- d$Tmin;
+  vap <- d$WVP;
+  fAPAR <- d$fAPAR;
+  
+  k_temp <- tc+273.15; #convert from degree to kelvin
+
+  viscosity <- matrix(data=NA, nrow = nrow(d), ncol = 1)
+  eta_star <- matrix(data=NA, nrow = nrow(d), ncol = 1)
+  m <- matrix(data=NA, nrow = nrow(d), ncol = 1)
+  m_sqrt <- matrix(data=NA, nrow = nrow(d), ncol = 1)
+  gpp <- matrix(data=NA, nrow = nrow(d), ncol = 1)
+  LUE <- matrix(data=NA, nrow = nrow(d), ncol = 1)
+  
+for (i in 1:nrow(d)) {  
+##################### P model calculation ################################
+
+# Calculate the pressure of given elevation
+p <- kPo*(1 - kL*z/kTo)^(kG*kMa/(kR*kL));
+
+#*************************************************************************
+# Calculate density of water at 1 atm, g/cm^3
+  po <- 0.99983952 +
+    (6.788260e-5)*tc +
+    -(9.08659e-6)*tc*tc +
+    (1.022130e-7)*tc*tc*tc +
+    -(1.35439e-9)*tc*tc*tc*tc +
+    (1.471150e-11)*tc*tc*tc*tc*tc +
+    -(1.11663e-13)*tc*tc*tc*tc*tc*tc +
+    (5.044070e-16)*tc*tc*tc*tc*tc*tc*tc +
+    -(1.00659e-18)*tc*tc*tc*tc*tc*tc*tc*tc
+  
+# Calculate the bulk modulus of water at 1 atm, atm
+  ko <- 19652.17 +
+    148.1830*tc +
+    -2.29995*tc*tc +
+    0.01281*tc*tc*tc +
+    -(4.91564e-5)*tc*tc*tc*tc +
+    (1.035530e-7)*tc*tc*tc*tc*tc
+  
+# Calculate temperature-dependend coefficients
+  ca <- 3.26138 +
+    (5.223e-4)*tc +
+    (1.324e-4)*tc*tc +
+    -(7.655e-7)*tc*tc*tc +
+    (8.584e-10)*tc*tc*tc*tc
+  
+  cb <- (7.2061e-5) +
+    -(5.8948e-6)*tc +
+    (8.69900e-8)*tc*tc +
+    -(1.0100e-9)*tc*tc*tc +
+    (4.3220e-12)*tc*tc*tc*tc
+  
+# Convert pressure to bar (1 bar = 100000 Pa)
+  pbar <- (1e-5)*p;
+  pw <- (1e3)*po*(ko + ca*pbar + cb*pbar^2)/(ko + ca*pbar + cb*pbar^2 - pbar);
+
+
+# ************************************************************************
+  viscosity_h2o <- function(tc, p) {
+  tk_ast = 647.096      # Kelvin
+  rho_ast = 322.0       # kg/m^3
+  mu_ast = (1e-6)       # Pa s
+  
+# Get the density of water, kg/m^3
+  rho = pw;
+  
+# Calculate dimensionless parameters:
+  tbar = (tc + 273.15)/tk_ast
+  tbarx = tbar^(0.5)
+  tbar2 = tbar^2
+  tbar3 = tbar^3
+  rbar = rho/rho_ast
+  
+# Calculate mu0 (Eq. 11 & Table 2, Huber et al., 2009):
+  mu0 = 1.67752
+  mu0 = mu0+ 2.20462/tbar
+  mu0= mu0+0.6366564/tbar2
+  mu0= mu0-0.241605/tbar3
+  mu0 = 1e2*tbarx/mu0
+  
+  # Create Table 3, Huber et al. (2009):
+  hj0 = c(0.520094,0.0850895, -1.08374, -0.289555, 0., 0.)
+  hj1 = c(0.222531, 0.999115, 1.88797, 1.26613, 0., 0.120573)
+  hj2 = c(-0.281378, -0.906851, -0.772479, -0.489837, -0.257040, 0.)
+  hj3 = c(0.161913,  0.257399, 0., 0., 0., 0.)
+  hj4 = c(-0.0325372, 0., 0., 0.0698452, 0., 0.)
+  hj5 = c(0., 0., 0., 0., 0.00872102, 0.)
+  hj6 = c(0., 0., 0., -0.00435673, 0., -0.000593264)
+  
+  h_array = t(cbind(hj0 , hj1 , hj2 ,hj3 ,hj4 , hj5 , hj6))
+  
+  # Calculate mu1 (Eq. 12 & Table 3, Huber et al., 2009):
+  mu1 = 0
+  ctbar = (1./tbar) - 1.
+  
+  for (i in 1:6){
+    coef1 = sum(ctbar^(i-1))
+    coef2=0
+    for (j in 1:7){
+      
+      coef2 = coef2+(h_array[j,i]*(rbar - 1)^(j-1))
+    }
+    mu1 = mu1+coef1*coef2
+    
+  }
+  
+  mu1 = exp(rbar*mu1)
+  
+  
+  # Calculate mu_bar (Eq. 2, Huber et al., 2009)
+  #   assumes mu2 = 1
+  mu_bar = mu0*mu1
+  
+  # Calculate mu (Eq. 1, Huber et al., 2009)
+  mu = mu_bar*mu_ast    # Pa s
+  mu<-as.numeric(mu)
+  return(mu)
+}
+  viscosity <- viscosity_h2o(tc[i],p)
+  
+# ************************************************************************
+# Calculate vpd under given temperature and vapour pressure
+  Tmax_min <- (8.635 * (Tmax + Tmin))/(0.5 * (Tmax + Tmin) + 237.3)
+  vpd_hpa <- (es0 * exp(Tmax_min) - (0.10 * vap)) * 10. # kPa --> hPa 
+
+# ************************************************************************
+# Calculate temperature pressure-dependent photorespiratory
+# compensation point, Gamma star
+  ttg <- ((k_temp - t_25) * Ha)/(R * k_temp * t_25)
+  Gamma_star <- gamma_25 * exp(ttg)
+
+# ************************************************************************
+# Calculate the temperature & pressure dependent Michaelis-Menten
+# coefficient, K (Pascals).
+  tempFrac <- ((k_temp - t_25) * Ha_kc) / (R * k_temp * t_25)
+  Kc <- kc25 * exp(tempFrac)
+  
+  tempFracK0 <- ((k_temp - t_25) * Ha_ko) / (R * k_temp * t_25)
+  K0 <- ko25 * exp(tempFracK0)
+  
+  p0= kco * (1e-6) * p
+  
+  K= Kc * (1 + ( p0 / K0))
+
+# ************************************************************************
+# Calculate the substrate limitation term m
+
+  # CO2_ppm data input
+  ca<- CO2ppm*1e-6*kPo;
+  
+  # Calculate the vapour pressure deficit D [Pa]
+  vpd <- vpd_hpa * 100;
+
+  # Calculate the relative viscosity
+  eta_star <- viscosity_h2o(tc[i],p)/viscosity_h2o(25,kPo);
+  
+  # Define the standardized cost ratio
+  beta <- 240;
+  
+  # Calculate the substrate limitation term, m [dimensionless].
+  m[i] <-(ca[i]-Gamma_star[i])/(ca[i]+2*Gamma_star[i]+3*Gamma_star[i]*sqrt(1.6*eta_star[i]*vpd[i]*(beta*(K[i]+Gamma_star[i]))^-1));
+
+# ************************************************************************
+# Calculate GPP
+  # Calculate GPP
+  
+  m_sqrt[i] <- sqrt(1-(c_star/m[i])^(2/3));
+  
+  if (tc[i]<0) {LUE[i]<-0}
+  else {LUE[i] <- C3_phi0 * m[i] * m_sqrt[i];}
+}  
+  
+  
+  Iabs<-fAPAR*absG*ppfd;  
+  
+  gpp <- LUE * Iabs
+  
+  
+  d <- cbind.data.frame(d,vpd)
+  d <- cbind.data.frame(d,Iabs)
+  d <- cbind.data.frame(d,LUE)
+  d <- cbind.data.frame(d,gpp)
+  
+  output <- paste("/Users/shirley/Desktop/Projects/20180516/GPP_results/",sitename,"_gpp.csv",sep = "")
+  write.csv(d,output,row.names = F)
+}
+
