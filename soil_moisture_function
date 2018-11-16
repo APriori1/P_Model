@@ -1,0 +1,42 @@
+rm(list = ls())
+setwd("/Users/shirley/Desktop/Projects/20180620_global/Data/SPLASH/wn_alpha/wn")
+fn <- dir()[145:420]
+g_cover <- read.csv("/Users/shirley/Desktop/Projects/20180620_global/Data/SPLASH/wn_alpha/grassland_cover.csv",header = F)
+
+for (f in fn) {
+  wn <- read.csv(f,header = F)
+  alpha <- read.csv(paste("/Users/shirley/Desktop/Projects/20180620_global/Data/SPLASH/wn_alpha/alpha/",f,sep = ""),header = F)
+  soil_stress <- matrix(rep(0,259200),nrow = 360,ncol = 720)
+  for (i in 1:nrow(g_cover)) {
+    for (j in 1:ncol(g_cover)) {
+      if (is.na(wn[i,j])==T) {
+        soil_stress[i,j] <- NA
+      } else if (wn[i,j] > 0.9) {
+        soil_stress[i,j] <- 1
+      } else if (wn[i,j] <= 0.9) {
+        if (g_cover[i,j]==0) {
+          phi_0 <- 0.179 + 0.45*alpha[i,j]
+          beta <- (phi_0 - 1) / 0.81
+          soil_stress[i,j] <- beta * (wn[i,j]-0.9)^2 +1
+        } else {
+          phi_0 <- 0.101 + 0.0063*alpha[i,j]
+          beta <- (phi_0 - 1) / 0.81
+          soil_stress[i,j] <- beta * (wn[i,j]-0.9)^2 +1
+        }
+      }
+    }
+  }
+  report <- paste(f,"is finished", Sys.time())
+  print(report)
+  out_file <- paste("/Users/shirley/Desktop/Projects/20180620_global/Data/SPLASH/wn_alpha/soil_moisture_stress/",
+                    f,sep = "")
+  write.table(soil_stress,out_file,sep = ",",na="NaN",row.names = F,col.names = F)
+}
+
+
+
+
+
+
+
+
